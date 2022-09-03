@@ -5,4 +5,3 @@ As I've been trying to learn about Bayesian statistics, I recently picked up Ric
 Since I want to start doing more things in Python, I figured this repo can serve two purposes:
 * Contain notes/answers to end of chapter exercises.
 * Have Jupyter notebooks that contain PyMC code (the book is written in R).
-
