@@ -1,0 +1,26 @@
+---
+title: "Untitled"
+format: html
+---
+
+```{python}
+import pandas as pd
+import pymc as pm
+import numpy as np
+```
+
+```{python}
+x = np.random.normal(0, 1, 100)
+```
+
+```{python}
+with pm.Model() as model:
+    mu = pm.Normal('mu', mu=0, tau=0.01)
+    tau = pm.Gamma('tau', alpha=0.01, beta=0.01)
+    y = pm.Normal('y', mu=mu, tau=tau, observed=x)
+```
+
+```{python}
+with model:
+    trace = pm.sample()
+```
