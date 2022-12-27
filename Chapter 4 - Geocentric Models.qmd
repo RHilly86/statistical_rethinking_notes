@@ -1,0 +1,42 @@
+---
+title: "Chapter 4 - Geocentric Models"
+format: html
+---
+
+
+```{r}
+library(rethinking)
+library(brms)
+library(tidybayes)
+library(tidyverse)
+
+options(brms.backend = "cmdstanr")
+```
+
+## 4.1 Why normal distributions are normal
+
+### 4.1.2 Normal by multiplication
+
+### 4.1.3 Normal by log-multiplication
+
+### 4.1.4 Using Gaussian distributions
+
+## 4.2 A language for describing models
+
+### 4.2.1 Re-describing the globe tossing model
+
+## 4.3 Gaussian model of height
+
+### 4.3.1 The data
+
+### 4.3.2 The model
+
+### 4.3.3 Grid approximation of the posterior distribution
+
+### 4.3.4 Sampling from the posterior
+
+### 4.3.5 
+
+```{r}
+
+```

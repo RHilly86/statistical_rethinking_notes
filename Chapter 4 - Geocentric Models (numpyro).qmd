@@ -1,0 +1,745 @@
+---
+title: "Untitled"
+format: html
+---
+
+
+```{python}
+import arviz as az
+import matplotlib.pyplot as plt
+import pandas as pd
+from scipy.interpolate import BSpline
+from scipy.stats import gaussian_kde
+import bambi as bmb
+
+import jax.numpy as jnp
+from jax import random, vmap
+
+import numpyro
+import numpyro.distributions as dist
+import numpyro.optim as optim
+from numpyro.diagnostics import hpdi, print_summary
+from numpyro.infer import Predictive, SVI, Trace_ELBO, init_to_value
+from numpyro.infer.autoguide import AutoLaplaceApproximation
+
+plt.style.use("fivethirtyeight")
+numpyro.set_platform("cpu")
+
+FIGSIZE = (12, 8)
+```
+
+
+```{python}
+jnp.sum(dist.Uniform(-1, 1).sample(random.PRNGKey(0), (1000, 16)), -1)
+```
+
+```{python}
+jnp.prod(1 + dist.Uniform(0, 0.1).sample(random.PRNGKey(0), (1000, 12)), -1)
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+
+growth = jnp.prod(1 + dist.Uniform(0, 0.1).sample(random.PRNGKey(0), (1000, 12)), -1)
+az.plot_density({"growth": growth}, ax=ax, hdi_prob=1)
+
+x = jnp.sort(growth)
+ax.plot(
+    x,
+    jnp.exp(dist.Normal(jnp.mean(x), jnp.std(x)).log_prob(x)),
+    linestyle="--",
+)
+```
+
+```{python}
+big = jnp.prod(
+    1 + dist.Uniform(0, 0.5).sample(random.PRNGKey(0), (1000, 12)),
+    axis=-1
+)
+small = jnp.prod(
+    1 + dist.Uniform(0, 0.1).sample(random.PRNGKey(0), (1000, 12)),
+    axis=-1
+)
+log_big = jnp.log(
+    jnp.prod(1 + dist.Uniform(0, 0.5).sample(random.PRNGKey(0), (1000, 12)),
+    axis=-1)
+)
+```
+
+```{python}
+w = 6
+n = 9
+p_grid = jnp.linspace(0, 1, 100)
+prob_binom = jnp.exp(dist.Binomial(n, p_grid).log_prob(w))
+posterior = prob_binom * jnp.exp(dist.Uniform(0, 1).log_prob(p_grid))
+posterior = posterior / jnp.sum(posterior)
+```
+
+```{python}
+howell = pd.read_csv("Howell1.csv")
+```
+
+```{python}
+howell_subset = howell.query("age >= 18")
+```
+
+```{python}
+x = jnp.linspace(100, 250, 101)
+
+fig, ax = plt.subplots(figsize=FIGSIZE)
+ax.plot(
+    x,
+    jnp.exp(dist.Normal(178, 20).log_prob(x))
+)
+ax.set(title="Prior distribution of mu")
+```
+
+```{python}
+x = jnp.linspace(-10, 60, 101)
+
+fig, ax = plt.subplots(figsize=FIGSIZE)
+ax.plot(
+    x,
+    jnp.exp(dist.Uniform(0, 50, validate_args=True).log_prob(x))
+)
+ax.set(title="Prior distribution of sigma")
+```
+
+```{python}
+sample_mu = dist.Normal(178, 20).sample(random.PRNGKey(0), (10_000,))
+sample_sigma = dist.Uniform(0, 50).sample(random.PRNGKey(1), (10_000,))
+prior_predictive = dist.Normal(sample_mu, sample_sigma).sample(random.PRNGKey(2))
+
+fig, ax = plt.subplots(figsize=FIGSIZE)
+az.plot_kde(prior_predictive, ax=ax)
+ax.set(title="Prior predictive distribution of height")
+```
+
+```{python}
+sample_mu = dist.Normal(178, 100).sample(random.PRNGKey(0), (10_000,))
+prior_predictive = dist.Normal(sample_mu, sample_sigma).sample(random.PRNGKey(2))
+
+fig, ax = plt.subplots(figsize=FIGSIZE)
+az.plot_kde(prior_predictive, ax=ax)
+ax.set(title="Prior predictive distribution of height")
+```
+
+```{python}
+mu_list = jnp.linspace(start=150, stop=160, num=100)
+sigma_list = jnp.linspace(start=7, stop=9, num=100)
+mesh = jnp.meshgrid(mu_list, sigma_list)
+posterior = {"mu": mesh[0].reshape(-1), "sigma": mesh[1].reshape(-1)}
+
+posterior["log_likelihood"] = vmap(
+    lambda mu, sigma: jnp.sum(dist.Normal(mu, sigma).log_prob(howell_subset["height"].values))
+)(posterior["mu"], posterior["sigma"])
+logprob_mu = dist.Normal(178, 20).log_prob(posterior["mu"])
+logprob_sigma = dist.Uniform(0, 50).log_prob(posterior["sigma"])
+posterior["probability"] = posterior["log_likelihood"] + logprob_mu + logprob_sigma
+posterior["probability"] = jnp.exp(posterior["probability"] - jnp.max(posterior["probability"]))
+```
+
+```{python}
+plt.contour(
+    posterior["mu"].reshape(100, 100),
+    posterior["sigma"].reshape(100, 100),
+    posterior["probability"].reshape(100, 100),
+)
+```
+
+```{python}
+plt.imshow(
+    posterior["probability"].reshape(100, 100),
+    origin="lower",
+    extent=[150, 160, 7, 9],
+    aspect="auto",
+)
+```
+
+```{python}
+probability = posterior["probability"] / jnp.sum(posterior["probability"])
+sample_rows = dist.Categorical(probs=probability).sample(random.PRNGKey(0), (10_000,))
+sample_mu = posterior["mu"][sample_rows]
+sample_sigma = posterior["sigma"][sample_rows]
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+ax.scatter(
+    sample_mu,
+    sample_sigma,
+    s=64,
+    alpha=0.1,
+    edgecolor="none"
+)
+```
+
+```{python}
+az.plot_kde(sample_mu)
+```
+
+```{python}
+az.plot_kde(sample_sigma)
+```
+
+```{python}
+hpdi(sample_mu, 0.89)
+hpdi(sample_sigma, 0.89)
+```
+
+```{python}
+howell_sample = howell_subset["height"].sample(20)
+```
+
+```{python}
+mu_list = jnp.linspace(start=150, stop=170, num=200)
+sigma_list = jnp.linspace(start=4, stop=20, num=200)
+mesh = jnp.meshgrid(mu_list, sigma_list)
+post2 = {"mu": mesh[0].reshape(-1), "sigma": mesh[1].reshape(-1)}
+post2["LL"] = vmap(
+    lambda mu, sigma: jnp.sum(dist.Normal(mu, sigma).log_prob(howell_sample.values))
+)(post2["mu"], post2["sigma"])
+logprob_mu = dist.Normal(178, 20).log_prob(post2["mu"])
+logprob_sigma = dist.Uniform(0, 50).log_prob(post2["sigma"])
+post2["prob"] = post2["LL"] + logprob_mu + logprob_sigma
+post2["prob"] = jnp.exp(post2["prob"] - jnp.max(post2["prob"]))
+prob = post2["prob"] / jnp.sum(post2["prob"])
+sample2_rows = dist.Categorical(probs=prob).sample(random.PRNGKey(0), (int(1e4),))
+sample2_mu = post2["mu"][sample2_rows]
+sample2_sigma = post2["sigma"][sample2_rows]
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+ax.scatter(
+    sample2_mu,
+    sample2_sigma,
+    s=64,
+    alpha=0.1,
+    edgecolor="none"
+)
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+
+az.plot_kde(sample2_sigma, ax=ax)
+x = jnp.sort(sample2_sigma)
+ax.plot(
+    x,
+    jnp.exp(dist.Normal(jnp.mean(x), jnp.std(x)).log_prob(x)),
+    linestyle="--"
+)
+```
+
+```{python}
+def flist(height):
+    mu = numpyro.sample("mu", dist.Normal(178, 20))
+    sigma = numpyro.sample("sigma", dist.Uniform(0, 50))
+    numpyro.sample("height", dist.Normal(mu, sigma), obs=height)
+```
+
+```{python}
+test = MCMC(NUTS(flist), num_warmup=1000, num_samples=1000, num_chains=4)
+test.run(random.PRNGKey(0), height=howell_subset["height"].values)
+```
+
+
+```{python}
+m4_1 = AutoLaplaceApproximation(flist)
+svi = SVI(
+    flist,
+    m4_1,
+    optim.Adam(1),
+    Trace_ELBO(),
+    height=howell_subset["height"].values,
+)
+svi_results = svi.run(random.PRNGKey(0), 2000)
+p4_1 = svi_results.params
+```
+
+```{python}
+samples = m4_1.sample_posterior(random.PRNGKey(1), p4_1, (1000,))
+print_summary(samples, prob=0.89, group_by_chain=False)
+```
+
+```{python}
+start= {
+    "mu": howell_subset["height"].mean(),
+    "sigma": howell_subset["height"].std(),
+}
+
+m4_1 = AutoLaplaceApproximation(
+    flist,
+    init_loc_fn=init_to_value(values=start)
+)
+svi = SVI(
+    flist,
+    m4_1,
+    optim.Adam(1),
+    Trace_ELBO(),
+    height=howell_subset["height"].values,
+)
+
+svi_results = svi.run(random.PRNGKey(0), 2000)
+p4_1 = svi_results.params
+```
+
+```{python}
+samples = m4_1.sample_posterior(random.PRNGKey(1), p4_1, (1000,))
+vcov = jnp.cov(jnp.stack(list(samples.values()), axis=0))
+vcov
+```
+
+```{python}
+jnp.diagonal(vcov)
+vcov / jnp.sqrt(jnp.outer(jnp.diagonal(vcov), jnp.diagonal(vcov)))
+```
+
+```{python}
+posterior = m4_1.sample_posterior(random.PRNGKey(1), p4_1, (10_000,))
+{latent: list(posterior[latent][:6]) for latent in posterior}
+```
+
+```{python}
+print_summary(posterior, prob=0.89, group_by_chain=False)
+```
+
+```{python}
+samples_flat = jnp.stack(list(posterior.values()))
+mu, sigma = jnp.mean(samples_flat, axis=1), jnp.cov(samples_flat)
+posterior = dist.MultivariateNormal(mu, sigma).sample(random.PRNGKey(0), (10_000,))
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+az.plot_pair(howell_subset[["weight", "height"]].to_dict(orient="list"),
+             ax=ax)
+```
+
+```{python}
+with numpyro.handlers.seed(rng_seed=2971):
+    N = 100
+    a = numpyro.sample("a", dist.Normal(178, 20).expand([N]))
+    b = numpyro.sample("b", dist.Normal(0, 10).expand([N]))
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+
+x = jnp.linspace(howell_subset["weight"].min(), howell_subset["weight"].max(), 101)
+x_bar = howell_subset["weight"].mean()
+
+for i in range(N):
+    ax.plot(x, a[i] + b[i] * (x - x_bar), "k", alpha=0.2)
+ax.axhline(y=0, c="k", linestyle="--")
+ax.axhline(y=272, c="k", linestyle="-", linewidth=0.5)
+ax.set(title="b ~ Normal(0, 10)")
+```
+
+```{python}
+b = dist.LogNormal(0, 1).sample(random.PRNGKey(0), (10_000,))
+az.plot_kde(b)
+```
+
+```{python}
+with numpyro.handlers.seed(rng_seed=2971):
+    N = 100
+    a = numpyro.sample("a", dist.Normal(178, 20).expand([N]))
+    b = numpyro.sample("b", dist.LogNormal(0, 1).expand([N]))
+```
+
+```{python}
+x_bar = howell_subset["weight"].mean()
+
+def model(weight, height):
+    a = numpyro.sample("a", dist.Normal(178, 20))
+    b = numpyro.sample("b", dist.LogNormal(0, 1))
+    sigma = numpyro.sample("sigma", dist.Uniform(0, 50))
+    
+    mu = numpyro.deterministic("mu", a + b * (weight - x_bar))
+    numpyro.sample("height", dist.Normal(mu, sigma), obs=height)
+```
+
+```{python}
+m4_3 = AutoLaplaceApproximation(model)
+svi = SVI(
+    model,
+    m4_3,
+    optim.Adam(1),
+    Trace_ELBO(),
+    weight=howell_subset["weight"].values,
+    height=howell_subset["height"].values,
+)
+
+svi_results = svi.run(random.PRNGKey(0), 2000)
+p4_3 = svi_results.params
+```
+
+```{python}
+def model(weight, height=None):
+    a = numpyro.sample("a", dist.Normal(178, 20))
+    log_b = numpyro.sample("log_b", dist.Normal(0, 1))
+    sigma = numpyro.sample("sigma", dist.Uniform(0, 50))
+    
+    mu = numpyro.deterministic("mu", a + jnp.exp(log_b) * (weight - x_bar))
+    numpyro.sample("height", dist.Normal(mu, sigma), obs=height)
+
+m4_3b = AutoLaplaceApproximation(model)
+svi = SVI(
+    model,
+    m4_3b,
+    optim.Adam(1),
+    Trace_ELBO(),
+    weight=howell_subset["weight"].values,
+    height=howell_subset["height"].values,
+)
+svi_results = svi.run(random.PRNGKey(0), 2000)
+p4_3b = svi_results.params
+```
+
+```{python}
+samples = m4_3.sample_posterior(random.PRNGKey(1), p4_3, (1000,))
+samples.pop("mu")
+print_summary(samples, prob=0.89, group_by_chain=False)
+```
+
+```{python}
+vcov = jnp.cov(jnp.stack(list(samples.values()), axis=0))
+jnp.round(vcov, 3)
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+
+az.plot_pair(howell_subset[["weight", "height"]].to_dict(orient="list"),
+             ax=ax)
+posterior = m4_3.sample_posterior(random.PRNGKey(1), p4_3, (10_000,))
+a_map = jnp.mean(posterior["a"])
+b_map = jnp.mean(posterior["b"])
+x = jnp.linspace(howell_subset["weight"].min(), howell_subset["weight"].max(), 101)
+ax.plot(
+    x,
+    a_map + b_map * (x - x_bar),
+    "k"
+)
+```
+
+```{python}
+{latent: list(posterior[latent][:6]) for latent in posterior}
+```
+
+```{python}
+N = 10
+dN = howell_subset.iloc[:N]
+
+def model(weight, height):
+    a = numpyro.sample("a", dist.Normal(178, 20))
+    b = numpyro.sample("b", dist.LogNormal(0, 1))
+    sigma = numpyro.sample("sigma", dist.Uniform(0, 50))
+    
+    mu = a + b * (weight - jnp.mean(weight))
+    numpyro.sample("height", dist.Normal(mu, sigma), obs=height)
+
+mN = AutoLaplaceApproximation(model)
+svi = SVI(
+    model,
+    mN,
+    optim.Adam(1),
+    Trace_ELBO(),
+    weight=dN["weight"].values,
+    height=dN["height"].values,
+)
+
+svi_results = svi.run(random.PRNGKey(0), 2000)
+pN = svi_results.params
+```
+
+```{python}
+posterior = mN.sample_posterior(random.PRNGKey(1), pN, (20,))
+
+fig, ax = plt.subplots(figsize=FIGSIZE)
+az.plot_pair(dN[["weight", "height"]].to_dict(orient="list"), ax=ax)
+
+x = jnp.linspace(howell_subset["weight"].min(), howell_subset["weight"].max(), 101)
+for i in range(20):
+    ax.plot(x, posterior["a"][i] + posterior["b"][i] * (x - x_bar), "k", alpha=0.3)
+ax.set(
+    xlim=(howell_subset["weight"].min(), howell_subset["weight"].max()),
+    ylim=(howell_subset["height"].min(), howell_subset["height"].max()),
+    title=f"N = {N}"
+)
+```
+
+```{python}
+posterior = m4_3.sample_posterior(random.PRNGKey(1), p4_3, (1000,))
+mu_at_50 = posterior["a"] + posterior["b"] * (50 - x_bar)
+```
+
+```{python}
+az.plot_kde(mu_at_50, label="mu|weight=50")
+```
+
+```{python}
+jnp.percentile(mu_at_50, q=jnp.array([5.5, 94.5]))
+```
+
+```{python}
+mu = Predictive(
+    m4_3.model,
+    posterior,
+    return_sites=["mu"]
+)(
+    random.PRNGKey(2),
+    howell_subset["weight"].values,
+    howell_subset["height"].values
+)["mu"]
+
+mu.shape, list(mu[:5, 0])
+```
+
+```{python}
+weight_seq = jnp.arange(start=25, stop=71, step=1)
+
+mu = Predictive(
+    m4_3.model,
+    posterior,
+    return_sites=["mu"]
+)(
+    random.PRNGKey(2),
+    weight_seq,
+    None
+)["mu"]
+
+mu.shape, list(mu[:5, 0])
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+az.plot_pair(howell_subset[["weight", "height"]].to_dict(orient="list"), ax=ax, scatter_kwargs={"alpha": 0})
+
+for i in range(100):
+    ax.plot(weight_seq, mu[i], "o", c="royalblue", alpha=0.1)
+```
+
+```{python}
+mu_mean = jnp.mean(mu, 0)
+mu_PI = jnp.percentile(mu, q=jnp.array([5.5, 94.5]), axis=0)
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+
+az.plot_pair(howell_subset[["weight", "height"]].to_dict(orient="list"), ax=ax, scatter_kwargs={"alpha": 0.5})
+ax.plot(weight_seq, mu_mean, "k")
+ax.fill_between(weight_seq, mu_PI[0], mu_PI[1], color="k", alpha=0.2)
+```
+
+```{python}
+posterior = m4_3.sample_posterior(random.PRNGKey(1), p4_3, (1000,))
+mu_link = lambda weight: posterior["a"] + posterior["b"] * (weight - x_bar)
+weight_seq = jnp.arange(start=25, stop=71, step=1)
+mu = vmap(mu_link)(weight_seq).T
+mu_mean = jnp.mean(mu, 0)
+mu_HPDI = hpdi(mu, prob=0.89, axis=0)
+```
+
+```{python}
+sim_height = m4_3.sample_posterior(random.PRNGKey(1), p4_3, (1000,))
+mu_link = lambda weight: posterior["a"] + posterior["b"] * (weight - x_bar)
+weight_seq = jnp.arange(start=25, stop=71, step=1)
+mu = vmap(mu_link)(weight_seq).T
+mu_mean = jnp.mean(mu, 0)
+mu_HPDI = hpdi(mu, prob=0.89, axis=0)
+```
+
+```{python}
+sim_height = Predictive(
+    m4_3.model,
+    posterior,
+    return_sites=["height"]
+)(
+    random.PRNGKey(2),
+    weight_seq,
+    None
+)["height"]
+sim_height.shape, list(sim_height[:5, 0])
+```
+
+```{python}
+height_PI = jnp.percentile(sim_height, q=jnp.array([5.5, 94.5]), axis=0)
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+az.plot_pair(howell_subset[["weight", "height"]].to_dict(orient="list"), ax=ax, scatter_kwargs={"alpha": 0.5})
+ax.plot(weight_seq, mu_mean, "k")
+
+ax.fill_between(
+    weight_seq,
+    mu_HPDI[0],
+    mu_HPDI[1],
+    color="k",
+    alpha=0.2
+)
+ax.fill_between(
+    weight_seq,
+    height_PI[0],
+    height_PI[1],
+    color="k",
+    alpha=0.15
+)
+```
+
+```{python}
+posterior = m4_3.sample_posterior(random.PRNGKey(1), p4_3, (1000,))
+weight_seq = jnp.arange(25, 71)
+sim_height = vmap(
+    lambda i, weight: dist.Normal(
+        posterior["a"] +  posterior["b"] * (weight - x_bar),
+        posterior["sigma"]
+    ).sample(random.PRNGKey(i))
+)(jnp.arange(len(weight_seq)), weight_seq).T
+height_PI = jnp.percentile(sim_height, q=jnp.array([5.5, 94.5]), axis=0)
+```
+
+```{python}
+howell = (
+    howell
+    .assign(
+        weight_standardized=lambda df: (df["weight"] - df["weight"].mean()) / df["weight"].std(),
+        weight_squared=lambda df: df["weight_standardized"] ** 2
+    )
+)
+
+def model(weight_standardized, weight_squared, height=None):
+    a = numpyro.sample("a", dist.Normal(178, 20))
+    b1 = numpyro.sample("b1", dist.LogNormal(0, 1))
+    b2 = numpyro.sample("b2", dist.Normal(0, 1))
+    sigma = numpyro.sample("sigma", dist.Uniform(0, 50))
+
+    mu = numpyro.deterministic("mu", a + b1 * weight_standardized + b2 * weight_squared)
+    numpyro.sample("height", dist.Normal(mu, sigma), obs=height)
+```
+
+```{python}
+m4_5 = AutoLaplaceApproximation(model)
+svi = SVI(
+    model,
+    m4_5,
+    optim.Adam(1),
+    Trace_ELBO(),
+    weight_standardized=howell["weight_standardized"].values,
+    weight_squared=howell["weight_squared"].values,
+    height=howell["height"].values
+)
+svi_results = svi.run(random.PRNGKey(0), 3000)
+p4_5 = svi_results.params
+```
+
+```{python}
+samples = m4_5.sample_posterior(random.PRNGKey(1), p4_5, (1000,))
+print_summary({k: v for k, v in samples.items() if k != "mu"}, prob=0.89, group_by_chain=False)
+```
+
+```{python}
+weight_seq = jnp.linspace(start=-2.2, stop=2, num=30)
+pred_dat = {"weight_standardized": weight_seq, "weight_squared": weight_seq ** 2}
+posterior = m4_5.sample_posterior(random.PRNGKey(1), p4_5, (1000,))
+predictive = Predictive(m4_5.model, posterior)
+mu = predictive(random.PRNGKey(2), **pred_dat)["mu"]
+mu_mean = jnp.mean(mu, axis=0)
+mu_PI = jnp.percentile(mu, q=jnp.array([5.5, 94.5]), axis=0)
+sim_height = predictive(random.PRNGKey(3), **pred_dat)["height"]
+height_PI = jnp.percentile(sim_height, q=jnp.array([5.5, 94.5]), axis=0)
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+az.plot_pair(howell[["weight_standardized", "height"]].to_dict(orient="list"), ax=ax, scatter_kwargs={"alpha": 0.5})
+
+ax.plot(
+    weight_seq,
+    mu_mean,
+    "k"
+)
+
+ax.fill_between(
+    weight_seq,
+    mu_PI[0],
+    mu_PI[1],
+    color="k",
+    alpha=0.2
+)
+ax.fill_between(
+    weight_seq,
+    height_PI[0],
+    height_PI[1],
+    color="k",
+    alpha=0.15
+)
+```
+
+```{python}
+howell = (
+    howell
+    .assign(weight_cubed=lambda df: df["weight_standardized"] ** 3)
+    )
+```
+
+```{python}
+def model(weight_s, weight_s2, weight_s3, height):
+    a = numpyro.sample("a", dist.Normal(178, 20))
+    b1 = numpyro.sample("b1", dist.LogNormal(0, 1))
+    b2 = numpyro.sample("b2", dist.Normal(0, 1))
+    b3 = numpyro.sample("b3", dist.Normal(0, 1))
+    sigma = numpyro.sample("sigma", dist.Uniform(0, 50))
+    mu = a + b1 * weight_s + b2 * weight_s2 + b3 * weight_s3
+    numpyro.sample("height", dist.Normal(mu, sigma), obs=height)
+
+
+m4_6 = AutoLaplaceApproximation(model)
+svi = SVI(
+    model,
+    m4_6,
+    optim.Adam(0.3),
+    Trace_ELBO(),
+    weight_s=howell.weight_standardized.values,
+    weight_s2=howell.weight_squared.values,
+    weight_s3=howell.weight_cubed.values,
+    height=howell.height.values,
+)
+svi_result = svi.run(random.PRNGKey(0), 1000)
+p4_6 = svi_result.params
+```
+
+```{python}
+fig, ax = plt.subplots(figsize=FIGSIZE)
+az.plot_pair(howell[["weight_standardized", "height"]].to_dict(orient="list"), ax=ax, scatter_kwargs={"alpha": 0.5})
+ax.set(
+    xlabel="weight",
+    ylabel="height",
+    xticks=[]
+)
+```
+
+```{python}
+cherry_blossoms = pd.read_csv("cherry_blossoms.csv")
+```
+
+```{python}
+cherry_blossoms_subset = cherry_blossoms.loc[cherry_blossoms["doy"].notna()]
+num_knots = 15
+knot_list = jnp.quantile(
+    cherry_blossoms_subset["year"].values.astype(float),
+    q=jnp.linspace(0, 1, num_knots)
+)
+```
+
+```{python}
+knots = jnp.pad(knot_list, (3, 3), mode="edge")
+B = BSpline(knots, jnp.identity(num_knots + 2), k=3)(cherry_blossoms_subset["year"].values)
+```
+
+```{python}
+```
